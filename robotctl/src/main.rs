@@ -4157,16 +4157,16 @@ fn run_policy_skill(
         }
     };
 
-    let prepared = prepare_skill_add(
+    let prepared = prepare_skill_add(SkillAddSpec {
         name,
         source,
         path,
-        from_manifest.as_ref(),
-        *hold,
-        *unwind,
-        command_spec.as_deref(),
-        unwind_command.as_deref(),
-    )?;
+        from_manifest: from_manifest.as_ref(),
+        hold: *hold,
+        unwind: *unwind,
+        command_spec: command_spec.as_deref(),
+        unwind_command: unwind_command.as_deref(),
+    })?;
 
     commit_skill_add(config, &prepared, *dry_run)?;
 
@@ -4197,6 +4197,18 @@ fn run_policy_skill(
     report_reload(robot_socket);
     println!("  `robotctl robot do {name}` runs it, once the policy is driving");
     Ok(())
+}
+
+/// The knobs `policy add` takes after the source has been resolved to a path.
+struct SkillAddSpec<'a> {
+    name: &'a str,
+    source: &'a str,
+    path: Option<PathBuf>,
+    from_manifest: Option<&'a proto::PolicyFetchResult>,
+    hold: Option<f64>,
+    unwind: Option<f64>,
+    command_spec: Option<&'a str>,
+    unwind_command: Option<&'a str>,
 }
 
 /// The would-be `[[policy.skill]]` entry, plus the manifest facts that are not written.
@@ -4252,16 +4264,17 @@ impl SkillAdd {
 
 /// Build the entry a real add would write. Shared so a dry-run refuses with the same
 /// messages and the same exit codes.
-fn prepare_skill_add(
-    name: &str,
-    source: &str,
-    path: Option<PathBuf>,
-    from_manifest: Option<&proto::PolicyFetchResult>,
-    hold: Option<f64>,
-    unwind: Option<f64>,
-    command_spec: Option<&str>,
-    unwind_command: Option<&str>,
-) -> Result<SkillAdd, Failure> {
+fn prepare_skill_add(spec: SkillAddSpec<'_>) -> Result<SkillAdd, Failure> {
+    let SkillAddSpec {
+        name,
+        source,
+        path,
+        from_manifest,
+        hold,
+        unwind,
+        command_spec,
+        unwind_command,
+    } = spec;
     // A skill feeds its network a constant. A policy whose manifest says the daemon must drive
     // it — a phase for a ground pick, a flag for a sit↔stand — cannot be one, and would run on a
     // command it was never trained on while looking plausible. Those go in the slot the daemon
@@ -6292,6 +6305,25 @@ mod tests {
         assert!(json);
     }
 
+    fn add_spec<'a>(
+        name: &'a str,
+        source: &'a str,
+        path: Option<PathBuf>,
+        from_manifest: Option<&'a proto::PolicyFetchResult>,
+        hold: Option<f64>,
+    ) -> SkillAddSpec<'a> {
+        SkillAddSpec {
+            name,
+            source,
+            path,
+            from_manifest,
+            hold,
+            unwind: None,
+            command_spec: None,
+            unwind_command: None,
+        }
+    }
+
     fn fetched_bow() -> proto::PolicyFetchResult {
         proto::PolicyFetchResult {
             path: "/var/lib/robot/policies/fffiloni/microduck-polite-bow-b1d864/main/policy.onnx"
@@ -6317,16 +6349,13 @@ mod tests {
     #[test]
     fn a_dry_run_json_shape_is_the_would_be_entry() {
         let fetched = fetched_bow();
-        let prepared = must(prepare_skill_add(
+        let prepared = must(prepare_skill_add(add_spec(
             "polite-bow",
             "fffiloni/microduck-polite-bow-b1d864",
             Some(PathBuf::from(&fetched.path)),
             Some(&fetched),
             None,
-            None,
-            None,
-            None,
-        ));
+        )));
         let json = serde_json::to_value(prepared.preview()).expect("serializes");
         let obj = json.as_object().expect("object");
         for key in [
@@ -6375,16 +6404,13 @@ mod tests {
         let onnx = dir.path().join("bow.onnx");
         std::fs::write(&onnx, b"").unwrap();
 
-        let prepared = must(prepare_skill_add(
+        let prepared = must(prepare_skill_add(add_spec(
             "polite-bow",
             onnx.to_str().unwrap(),
             Some(onnx.clone()),
             None,
             Some(4.0),
-            None,
-            None,
-            None,
-        ));
+        )));
         must(commit_skill_add(&config, &prepared, true));
         assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
         assert!(
@@ -6412,27 +6438,21 @@ mod tests {
             duration_s: Some(2.8),
             ..Default::default()
         };
-        let dry = prepare_skill_add(
+        let dry = prepare_skill_add(add_spec(
             "pick",
             "org/pick",
             Some(PathBuf::from("/srv/pick.onnx")),
             Some(&phase),
             None,
-            None,
-            None,
-            None,
-        )
+        ))
         .expect_err("refused");
-        let real = prepare_skill_add(
+        let real = prepare_skill_add(add_spec(
             "pick",
             "org/pick",
             Some(PathBuf::from("/srv/pick.onnx")),
             Some(&phase),
             None,
-            None,
-            None,
-            None,
-        )
+        ))
         .expect_err("refused");
         assert_eq!(dry.code, real.code);
         assert_eq!(dry.message, real.message);
@@ -6442,27 +6462,21 @@ mod tests {
             kind: Some("perpetual".into()),
             ..Default::default()
         };
-        let dry = prepare_skill_add(
+        let dry = prepare_skill_add(add_spec(
             "flamingo",
             "org/flamingo",
             Some(PathBuf::from("/srv/f.onnx")),
             Some(&perpetual),
             None,
-            None,
-            None,
-            None,
-        )
+        ))
         .expect_err("refused");
-        let real = prepare_skill_add(
+        let real = prepare_skill_add(add_spec(
             "flamingo",
             "org/flamingo",
             Some(PathBuf::from("/srv/f.onnx")),
             Some(&perpetual),
             None,
-            None,
-            None,
-            None,
-        )
+        ))
         .expect_err("refused");
         assert_eq!(dry.code, real.code);
         assert_eq!(dry.message, real.message);
@@ -6471,16 +6485,13 @@ mod tests {
         let config = dir.path().join("robotd.toml");
         let original = "[policy]\n";
         std::fs::write(&config, original).unwrap();
-        let owned = must(prepare_skill_add(
+        let owned = must(prepare_skill_add(add_spec(
             "ground_pick",
             "/srv/x.onnx",
             Some(PathBuf::from("/srv/x.onnx")),
             None,
             Some(1.0),
-            None,
-            None,
-            None,
-        ));
+        )));
         let dry = commit_skill_add(&config, &owned, true).expect_err("refused");
         let real = commit_skill_add(&config, &owned, false).expect_err("refused");
         assert_eq!(dry.code, real.code);
@@ -6492,16 +6503,13 @@ mod tests {
     /// rather than looking like a new skill. `roulade` is one of the fallback three.
     #[test]
     fn a_dry_run_says_when_it_would_override_a_shipped_skill() {
-        let prepared = must(prepare_skill_add(
+        let prepared = must(prepare_skill_add(add_spec(
             "roulade",
             "/srv/roll.onnx",
             Some(PathBuf::from("/srv/roll.onnx")),
             None,
             Some(1.0),
-            None,
-            None,
-            None,
-        ));
+        )));
         assert!(prepared.preview().overrides_shipped);
     }
 
